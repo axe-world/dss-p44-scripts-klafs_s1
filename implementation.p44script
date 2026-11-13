@@ -1,22 +1,103 @@
 // Klafs Sauna S1 - plan44 Scripted Device
+// Version 4: beschleunigte Sauna-ID-Suche (kurzer HTML-Ausschnitt).
 // Achtung: Remote-Start nur bei bestandener Klafs-Sicherheitskontrolle!
-// Bitte konfigurieren; 
+// Zugangsdaten und PIN konfigurieren; Sauna-ID wird automatisch erkannt.
+// Bei mehreren registrierten Saunen wird aus Sicherheitsgruenden keine gewaehlt.
 var base = 'https://sauna-app-19.klafs.com';
 var klafsUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3071.71 Safari/537.36';
-var saunaId = 'HIER_SAUNA_ID_EINTRAGEN';
+var saunaId = ''; // Wird nach dem Login aus der Klafs-Antwort ermittelt
 var username = 'HIER_USERNAME_EINTRAGEN';
 var password = 'HIER_PASSWORT_EINTRAGEN';
 var pin = 'HIER_PIN_EINTRAGEN';
 
 var sessionCookie = '';
-var requestVerificationToken = '';
 var busy = false;
 // Letzte bestaetigte API-Zustaende; bei erstem Poll kein Event senden.
 var lastPoweredOn = null;
 var lastHeatedUp = null;
 
-function requireConfigured() {
-  if (saunaId=='HIER_SAUNA_ID_EINTRAGEN') throw 'Sauna-ID fehlt';
+// Sauna-ID nur in einem kurzen Ausschnitt um das Feld suchen.
+// Die HTML-Antwort von ChangeSettings kann sehr gross sein. Daher kein
+// wiederholtes GUID-Scanning ueber den gesamten HTTP-Response-String.
+function isSaunaGuid(id) {
+  if (strlen(id)!=36) return false;
+  if (substr(id,8,1)!='-' || substr(id,13,1)!='-' || substr(id,18,1)!='-' || substr(id,23,1)!='-') return false;
+  var alphabet = '0123456789abcdef';
+  var lower = lowercase(id);
+  for (var i=0; i<36; i++) {
+    if (i!=8 && i!=13 && i!=18 && i!=23) {
+      if (!isvalid(find(alphabet,substr(lower,i,1)))) return false;
+    }
+  }
+  return true;
+}
+
+function findGuidAtMarker(text, marker) {
+  var pos = find(text,marker);
+  if (!isvalid(pos)) return '';
+
+  // Aus dem grossen HTML nur maximal 240 Zeichen ausschneiden.
+  // Die erste Trennstelle einer GUID liegt bei Zeichen 9.
+  var snippet = substr(text,pos+strlen(marker),240);
+  var found = '';
+  var remaining = snippet;
+  var offset = 0;
+  var attempts = 0;
+  while (strlen(remaining)>0 && attempts<32) {
+    var dash = find(remaining,'-');
+    if (!isvalid(dash)) break;
+    var start = offset+dash-8;
+    if (start>=0 && start+36<=strlen(snippet)) {
+      var candidate = substr(snippet,start,36);
+      if (isSaunaGuid(candidate)) {
+        if (found!='' && lowercase(found)!=lowercase(candidate)) throw 'Klafs: mehrere Sauna-IDs gefunden';
+        found = candidate;
+      }
+    }
+    offset=offset+dash+1;
+    remaining=substr(snippet,offset);
+    attempts=attempts+1;
+  }
+  return found;
+}
+
+function findSaunaId(text) {
+  if (!isvalid(text)) return '';
+  var html = string(text);
+  // Der regulaere Fall: SelectedCabin ist in ChangeSettings enthalten.
+  // Alternative Feldnamen nur pruefen, wenn SelectedCabin nicht vorkommt.
+  var found = findGuidAtMarker(html,'SelectedCabin');
+  // Bei mehreren ausgewaehlten Kabinen keine fremde ID uebernehmen.
+  // Nur eine zusaetzliche Suche, nicht jede GUID im kompletten HTML pruefen.
+  if (found!='') {
+    var firstMarker = find(html,'SelectedCabin');
+    var rest = substr(html,firstMarker+strlen('SelectedCabin'));
+    var another = findGuidAtMarker(rest,'SelectedCabin');
+    if (another!='' && lowercase(another)!=lowercase(found)) throw 'Klafs: mehrere Sauna-IDs gefunden';
+  }
+  if (found=='') found = findGuidAtMarker(html,'selectedCabin');
+  if (found=='') found = findGuidAtMarker(html,'SaunaId');
+  if (found=='') found = findGuidAtMarker(html,'saunaId');
+  if (found=='') found = findGuidAtMarker(html,'?s=');
+  return found;
+}
+
+function discoverSaunaId() {
+  if (saunaId!='') return;
+  if (sessionCookie=='') throw 'Klafs: keine Sitzung zur ID-Ermittlung';
+  // Die Sauna-ID wird direkt aus ChangeSettings gelesen.
+  // Der zuvor ausgefuehrte GET / ist nicht erforderlich.
+  log(5,'Klafs ID-Suche: ChangeSettings wird angefordert');
+  var settings = request('/SaunaApp/ChangeSettings','GET',null,true);
+  log(5,'Klafs ID-Suche: ChangeSettings empfangen');
+  saunaId = findSaunaId(settings.data);
+  if (saunaId=='') throw 'Klafs: SelectedCabin/Sauna-ID in ChangeSettings nicht gefunden';
+  log(5,'Klafs: Sauna-ID automatisch erkannt');
+}
+
+function ensureSaunaId() {
+  if (sessionCookie=='') login();
+  if (saunaId=='') discoverSaunaId();
 }
 
 function extractCookie(headers) {
@@ -38,7 +119,7 @@ function extractCookie(headers) {
 function request(path, method, data, authenticated) {
   var h = {'User-Agent':klafsUserAgent};
   if (authenticated && sessionCookie!='') h['Cookie'] = sessionCookie;
-  var req = {url:base+path, method:method, headers:h, timeout:30, withmeta:true};
+  var req = {url:base+path, method:method, headers:h, timeout:15, withmeta:true};
   if (isvalid(data)) req.data = data;
   var r = httprequest(req);
   if (!isvalid(r) || !isvalid(r.status)) throw 'Klafs HTTP ohne Antwort';
@@ -52,29 +133,40 @@ function request(path, method, data, authenticated) {
 }
 
 function login() {
-  if (username=='HIER_USERNAME_EINTRAGEN' || password=='HIER_PASSWORT_EINTRAGEN') throw 'Klafs Credentials fehlen';
+  if (username=='' || username=='HIER_USERNAME_EINTRAGEN' || password=='' || password=='HIER_PASSWORT_EINTRAGEN') throw 'Klafs Credentials fehlen';
 
   var r = httprequest({url:base+'/Account/Login', method:'POST',
     headers:{'User-Agent':klafsUserAgent},
     data:{UserName:username, Password:password}, formdata:true,
     timeout:20, withmeta:true});
-  if (!isvalid(r) || r.status<200 || r.status>=300) throw 'Klafs Login HTTP Fehler';
+  if (!isvalid(r) || !isvalid(r.status) || r.status<200 || r.status>=300) throw 'Klafs Login HTTP Fehler';
   if (!extractCookie(r.headers)) throw 'Klafs Login: .ASPXAUTH Cookie nicht in Antwortheadern gefunden';
 
+  // Wenn die Login-Antwort bereits eine Sauna-ID enthaelt, wird sie verwendet.
+  // Ansonsten wird direkt ChangeSettings abgefragt.
+  saunaId = findSaunaId(r.data);
+  if (saunaId=='') {
+    var location = ifok(r.headers['location'], null);
+    if (!isvalid(location)) location = ifok(r.headers['Location'], null);
+    saunaId = findSaunaId(location);
+  }
   log(5,'Klafs Login: Sitzungscookie erhalten');
+  if (saunaId!='') log(5,'Klafs: Sauna-ID aus Login-Antwort erkannt');
 }
 
 function authed(path,method,data) {
-  if (sessionCookie=='') login();
+  ensureSaunaId();
   var r = request(path,method,data,true);
   return r;
 }
 
 function refresh() {
-  requireConfigured();
+  log(5,'Klafs: Polling gestartet');
+  ensureSaunaId();
+  log(5,'Klafs: Sauna-ID vorhanden, rufe GetData ab');
   var r = authed('/SaunaApp/GetData?id='+saunaId,'GET',null);
+  log(5,'Klafs: GetData empfangen');
   var d = json(r.data);
-  log("Klafs data: %s", d)
   if (!isvalid(d) || !isvalid(d.isPoweredOn) || !isvalid(d.isReadyForUse)) throw 'Klafs Statusfelder fehlen';
   // Die Werte werden ohne Umrechnung übernommen. "currentHumidity"
   if (isvalid(d.currentTemperature)) message({message:'sensor',index:0,value:d.currentTemperature});
@@ -108,8 +200,7 @@ function refresh() {
     if (lastPoweredOn == false && nowPoweredOn == true) {
       log(3, 'Klafs EVENT: Sauna eingeschaltet');
       message({message:'pushNotification',events:['Sauna eingeschaltet']});
-    }
-    else if (lastPoweredOn == true && nowPoweredOn == false) {
+    } else if (lastPoweredOn == true && nowPoweredOn == false) {
       log(3, 'Klafs EVENT: Sauna ausgeschaltet');
       message({message:'pushNotification',events:['Sauna ausgeschaltet']});
     }
@@ -118,8 +209,7 @@ function refresh() {
     if (lastHeatedUp == false && nowHeatedUp == true) {
       log(3, 'Klafs EVENT: Sauna aufgeheizt');
       message({message:'pushNotification',events:['Sauna aufgeheizt']});
-    }
-    else if (lastHeatedUp == true && nowHeatedUp == false) {
+    } else if (lastHeatedUp == true && nowHeatedUp == false) {
       log(3, 'Klafs EVENT: Sauna nicht aufgeheizt');
       message({message:'pushNotification',events:['Sauna nicht aufgeheizt']});
     }
@@ -175,21 +265,7 @@ function executeAction(a) {
   var temp = 0;
   var hum = -1;
 
-  if (a=='ActSommerSaunaClassic') { mode=1; temp=75; }
-  else if (a=='ActChilloutSauna') { mode=1; temp=80; }
-  else if (a=='ActAfterFitnessSauna') { mode=1; temp=85; }
-  else if (a=='ActClassicSauna') { mode=1; temp=90; }
-  else if (a=='ActSoftSauna') { mode=1; temp=65; }
-  else if (a=='ActSummerSaunaSoft') { mode=1; temp=70; }
-  else if (a=='ActRelaxSanarium') { mode=2; temp=50; hum=4; }
-  else if (a=='ActBeautySanarium') { mode=2; temp=55; hum=8; }
-  else if (a=='ActFamilySanarium') { mode=2; temp=50; hum=8; }
-  else if (a=='ActImmunPowerSanarium') { mode=2; temp=50; hum=6; }
-  else if (a=='ActVitalSanarium') { mode=2; temp=45; hum=6; }
-  else if (a=='ActTropenSanarium') { mode=2; temp=60; hum=10; }
-  else if (a=='ActSubtropenSanarium') { mode=2; temp=60; hum=8; }
-  else if (a=='ActFitnessSanarium') { mode=2; temp=55; hum=10; }
-  else throw 'Unbekannte Klafs-Aktion';
+  if (a=='ActSommerSaunaClassic') { mode=1; temp=75; } else if (a=='ActChilloutSauna') { mode=1; temp=80; } else if (a=='ActAfterFitnessSauna') { mode=1; temp=85; } else if (a=='ActClassicSauna') { mode=1; temp=90; } else if (a=='ActSoftSauna') { mode=1; temp=65; } else if (a=='ActSummerSaunaSoft') { mode=1; temp=70; } else if (a=='ActRelaxSanarium') { mode=2; temp=50; hum=4; } else if (a=='ActBeautySanarium') { mode=2; temp=55; hum=8; } else if (a=='ActFamilySanarium') { mode=2; temp=50; hum=8; } else if (a=='ActImmunPowerSanarium') { mode=2; temp=50; hum=6; } else if (a=='ActVitalSanarium') { mode=2; temp=45; hum=6; } else if (a=='ActTropenSanarium') { mode=2; temp=60; hum=10; } else if (a=='ActSubtropenSanarium') { mode=2; temp=60; hum=8; } else if (a=='ActFitnessSanarium') { mode=2; temp=55; hum=10; } else throw 'Unbekannte Klafs-Aktion';
   // Modus, Temperatur, ggf. Feuchte, einschalten.
   changeMode(mode);
   changeTemperature(temp);
@@ -200,8 +276,7 @@ function executeAction(a) {
 on (every(0:01)) {
   if (!busy) {
     busy=true;
-    try { refresh(); }
-    catch as e {
+    try { refresh(); } catch as e {
       log(3,'Klafs Polling fehlgeschlagen: %s',e);
       message({message:'opstate',level:0,text:'Klafs API Fehler'});
       // Keine veralteten Messungen als gültig stehen lassen.
@@ -219,20 +294,16 @@ on (message()) as m {
   if (m.message=='invokeAction') {
     if (busy) {
       message({message:'confirmAction',action:m.action,errorcode:1,errortext:'Klafs beschaeftigt'});
-    }
-    else if (!knownAction(m.action)) {
+    } else if (!knownAction(m.action)) {
       message({message:'confirmAction',action:m.action,errorcode:1,errortext:'Unbekannte Klafs-Aktion'});
-    }
-    else if (saunaId=='' || saunaId=='HIER_SAUNA_ID_EINTRAGEN' ||
-             username=='' || username=='HIER_USERNAME_EINTRAGEN' ||
+    } else if (username=='' || username=='HIER_USERNAME_EINTRAGEN' ||
              password=='' || password=='HIER_PASSWORT_EINTRAGEN' ||
              ((m.action=='ActTurnOn' ||
                (m.action!='ActTurnOff' && m.action!='ActModeSauna' &&
                 m.action!='ActModeSanarium' && m.action!='ActModeIR')) &&
               (pin=='' || pin=='HIER_PIN_EINTRAGEN'))) {
       message({message:'confirmAction',action:m.action,errorcode:1,errortext:'Klafs Konfiguration unvollstaendig'});
-    }
-    else {
+    } else {
       busy=true;
       // Sofortige Antwort fuer die digitalSTROM-App (Auftrag angenommen).
       message({message:'confirmAction',action:m.action,errorcode:0});
@@ -242,8 +313,7 @@ on (message()) as m {
           executeAction(actionId);
           refresh();
           log(5,'Klafs Aktion abgeschlossen: %s',actionId);
-        }
-        catch as e {
+        } catch as e {
           log(3,'Klafs Aktion nach Annahme fehlgeschlagen (%s): %s',actionId,e);
           message({message:'opstate',level:0,text:'Klafs Aktion fehlgeschlagen'});
         }

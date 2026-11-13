@@ -1,0 +1,176 @@
+{
+  "message": "init",
+  "protocol": "json",
+  "name": "Klafs Sauna S1",
+  "vendorname": "Klafs",
+  "modelname": "S1",
+  "colorclass": 8,
+  "output": "basic",
+  "group": 8,
+  "oemmodelguid": "gs1:(01)1234567890123",
+  "sensors": [
+    {
+      "id": "currentTemperature",
+      "sensortype": 1,
+      "usage": 1,
+      "group": 3,
+      "hardwarename": "Aktuelle Temperatur",
+      "min": 0,
+      "max": 130,
+      "resolution": 1,
+      "updateinterval": 60,
+      "alivesigninterval": 180
+    },
+    {
+      "id": "currentHumidity",
+      "sensortype": 2,
+      "usage": 1,
+      "group": 3,
+      "hardwarename": "Aktuelle Feuchtigkeit",
+      "min": 0,
+      "max": 100,
+      "resolution": 1,
+      "updateinterval": 60,
+      "alivesigninterval": 180
+    },
+    {
+      "id": "selectedSaunaTemperature",
+      "sensortype": 1,
+      "usage": 1,
+      "group": 3,
+      "hardwarename": "Zieltemperatur Sauna",
+      "min": 0,
+      "max": 130,
+      "resolution": 1,
+      "updateinterval": 60,
+      "alivesigninterval": 180
+    },
+    {
+      "id": "selectedSanariumTemperature",
+      "sensortype": 1,
+      "usage": 1,
+      "group": 3,
+      "hardwarename": "Zieltemperatur Sanarium",
+      "min": 0,
+      "max": 100,
+      "resolution": 1,
+      "updateinterval": 60,
+      "alivesigninterval": 180
+    }
+  ],
+  "states": {
+    "Eingeschaltet": {
+      "type": "enumeration",
+      "description": "Eingeschaltet",
+      "values": [
+        "!Aus",
+        "Ein"
+      ]
+    },
+    "Saunaofen": {
+      "type": "enumeration",
+      "description": "Saunaofen",
+      "values": [
+        "!Kühlt ab / kalt",
+        "Heizt auf",
+        "Fertig aufgeheizt"
+      ]
+    }
+  },
+  "events": {
+    "Sauna aufgeheizt": {
+      "description": "Sauna aufgeheizt",
+      "type": "boolean"
+    },
+    "Sauna eingeschaltet": {
+      "description": "Sauna eingeschaltet",
+      "type": "boolean"
+    },
+    "Sauna ausgeschaltet": {
+      "description": "Sauna ausgeschaltet",
+      "type": "boolean"
+    },
+    "Sauna nicht aufgeheizt": {
+      "description": "Sauna nicht aufgeheizt",
+      "type": "boolean"
+    }
+  },
+  "dynamicactions": {
+    "ActTurnOn": {
+      "title": "Einschalten",
+      "description": "Einschalten"
+    },
+    "ActTurnOff": {
+      "title": "Ausschalten",
+      "description": "Ausschalten"
+    },
+    "ActModeSauna": {
+      "title": "Modus Sauna",
+      "description": "Modus Sauna"
+    },
+    "ActModeSanarium": {
+      "title": "Modus Sanarium",
+      "description": "Modus Sanarium"
+    },
+    "ActModeIR": {
+      "title": "Modus IR",
+      "description": "Modus IR"
+    },
+    "ActSommerSaunaClassic": {
+      "title": "Sommer Sauna Classic",
+      "description": "Sommer Sauna Classic"
+    },
+    "ActChilloutSauna": {
+      "title": "Chillout Sauna",
+      "description": "Chillout Sauna"
+    },
+    "ActAfterFitnessSauna": {
+      "title": "Afterfitness Sauna",
+      "description": "Afterfitness Sauna"
+    },
+    "ActClassicSauna": {
+      "title": "Classic Sauna",
+      "description": "Classic Sauna"
+    },
+    "ActSoftSauna": {
+      "title": "Soft Sauna",
+      "description": "Soft Sauna"
+    },
+    "ActSummerSaunaSoft": {
+      "title": "Sommer Sauna Soft",
+      "description": "Sommer Sauna Soft"
+    },
+    "ActRelaxSanarium": {
+      "title": "Relax Sanarium",
+      "description": "Relax Sanarium"
+    },
+    "ActBeautySanarium": {
+      "title": "Beauty Sanarium",
+      "description": "Beauty Sanarium"
+    },
+    "ActFamilySanarium": {
+      "title": "Family Sanarium",
+      "description": "Family Sanarium"
+    },
+    "ActImmunPowerSanarium": {
+      "title": "Immun Power Sanarium",
+      "description": "Immun Power Sanarium"
+    },
+    "ActVitalSanarium": {
+      "title": "Vital Sanarium",
+      "description": "Vital Sanarium"
+    },
+    "ActTropenSanarium": {
+      "title": "Tropen Sanarium",
+      "description": "Tropen Sanarium"
+    },
+    "ActSubtropenSanarium": {
+      "title": "Subtropen Sanarium",
+      "description": "Subtropen Sanarium"
+    },
+    "ActFitnessSanarium": {
+      "title": "Fitness Sanarium",
+      "description": "Fitness Sanarium"
+    }
+  }
+}

@@ -1,0 +1,256 @@
+// Klafs Sauna S1 - plan44 Scripted Device
+// Achtung: Remote-Start nur bei bestandener Klafs-Sicherheitskontrolle!
+// Bitte konfigurieren; 
+var base = 'https://sauna-app-19.klafs.com';
+var klafsUserAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/59.0.3071.71 Safari/537.36';
+var saunaId = 'HIER_SAUNA_ID_EINTRAGEN';
+var username = 'HIER_USERNAME_EINTRAGEN';
+var password = 'HIER_PASSWORT_EINTRAGEN';
+var pin = 'HIER_PIN_EINTRAGEN';
+
+var sessionCookie = '';
+var requestVerificationToken = '';
+var busy = false;
+// Letzte bestaetigte API-Zustaende; bei erstem Poll kein Event senden.
+var lastPoweredOn = null;
+var lastHeatedUp = null;
+
+function requireConfigured() {
+  if (saunaId=='HIER_SAUNA_ID_EINTRAGEN') throw 'Sauna-ID fehlt';
+}
+
+function extractCookie(headers) {
+  // httprequest(withmeta) liefert response headers, die genaue Darstellung
+  // mehrerer Set-Cookie Header kann firmwareabhängig sein.
+  var header = ifok(headers['set-cookie'], null);
+  if (!isvalid(header)) header = ifok(headers['Set-Cookie'], null);
+  if (!isvalid(header)) return false;
+  var s = string(header);
+  var p = find(s, '.ASPXAUTH=');
+  if (!isvalid(p)) return false;
+  var token = substr(s,p);
+  var end = find(token,';');
+  if (isvalid(end)) token = substr(token,0,end+1);
+  sessionCookie = token;
+  return true;
+}
+
+function request(path, method, data, authenticated) {
+  var h = {'User-Agent':klafsUserAgent};
+  if (authenticated && sessionCookie!='') h['Cookie'] = sessionCookie;
+  var req = {url:base+path, method:method, headers:h, timeout:30, withmeta:true};
+  if (isvalid(data)) req.data = data;
+  var r = httprequest(req);
+  if (!isvalid(r) || !isvalid(r.status)) throw 'Klafs HTTP ohne Antwort';
+  if (r.status<200 || r.status>=300) throw format('Klafs HTTP %d (%s)',r.status,path);
+  if (isvalid(r.data)) {
+    var s = string(r.data);
+    if (isvalid(find(s,'"LoginRequired":true'))) throw 'Klafs LoginRequired';
+    if (isvalid(find(s,'security check')) || isvalid(find(s,'Sicherheitskontrolle'))) throw 'Klafs Sicherheitskontrolle nicht bestätigt';
+  }
+  return r;
+}
+
+function login() {
+  if (username=='HIER_USERNAME_EINTRAGEN' || password=='HIER_PASSWORT_EINTRAGEN') throw 'Klafs Credentials fehlen';
+
+  var r = httprequest({url:base+'/Account/Login', method:'POST',
+    headers:{'User-Agent':klafsUserAgent},
+    data:{UserName:username, Password:password}, formdata:true,
+    timeout:20, withmeta:true});
+  if (!isvalid(r) || r.status<200 || r.status>=300) throw 'Klafs Login HTTP Fehler';
+  if (!extractCookie(r.headers)) throw 'Klafs Login: .ASPXAUTH Cookie nicht in Antwortheadern gefunden';
+
+  log(5,'Klafs Login: Sitzungscookie erhalten');
+}
+
+function authed(path,method,data) {
+  if (sessionCookie=='') login();
+  var r = request(path,method,data,true);
+  return r;
+}
+
+function refresh() {
+  requireConfigured();
+  var r = authed('/SaunaApp/GetData?id='+saunaId,'GET',null);
+  var d = json(r.data);
+  log("Klafs data: %s", d)
+  if (!isvalid(d) || !isvalid(d.isPoweredOn) || !isvalid(d.isReadyForUse)) throw 'Klafs Statusfelder fehlen';
+  // Die Werte werden ohne Umrechnung übernommen. "currentHumidity"
+  if (isvalid(d.currentTemperature)) message({message:'sensor',index:0,value:d.currentTemperature});
+  else message({message:'sensor',index:0,value:null});
+  if (isvalid(d.currentHumidity)) message({message:'sensor',index:1,value:d.currentHumidity});
+  else message({message:'sensor',index:1,value:null});
+  if (isvalid(d.selectedSaunaTemperature)) message({message:'sensor',index:2,value:d.selectedSaunaTemperature});
+  else message({message:'sensor',index:2,value:null});
+  if (isvalid(d.selectedSanariumTemperature)) message({message:'sensor',index:3,value:d.selectedSanariumTemperature});
+  else message({message:'sensor',index:3,value:null});
+  // Klafs-API Booleanwerte in definierte Enumeration-States umwandeln.
+  // Der Ofenstatus richtet sich zuerst nach der Einschaltung.
+  // Ein + nicht bereit = Heizt auf; Ein + bereit = Fertig aufgeheizt;
+  // Aus = Kühlt ab / kalt, unabhängig von isReadyForUse.
+  var poweredOn = 'Aus';
+  var ovenStatus = 'Kühlt ab / kalt';
+  if (d.isPoweredOn) {
+    poweredOn = 'Ein';
+    ovenStatus = 'Heizt auf';
+    if (d.isReadyForUse) ovenStatus = 'Fertig aufgeheizt';
+  }
+  log(3, 'Klafs API: isPoweredOn=%s, isReadyForUse=%s', d.isPoweredOn, d.isReadyForUse);
+  log(3, 'Klafs States: Eingeschaltet=%s, Saunaofen=%s', poweredOn, ovenStatus);
+  message({message:'pushNotification',statechange:{Eingeschaltet:poweredOn}});
+  message({message:'pushNotification',statechange:{Saunaofen:ovenStatus}});
+
+  // Events nur bei echten Zustandswechseln; keinen Event beim ersten Abruf.
+  var nowPoweredOn = poweredOn == 'Ein';
+  var nowHeatedUp = ovenStatus == 'Fertig aufgeheizt';
+  if (lastPoweredOn != null) {
+    if (lastPoweredOn == false && nowPoweredOn == true) {
+      log(3, 'Klafs EVENT: Sauna eingeschaltet');
+      message({message:'pushNotification',events:['Sauna eingeschaltet']});
+    }
+    else if (lastPoweredOn == true && nowPoweredOn == false) {
+      log(3, 'Klafs EVENT: Sauna ausgeschaltet');
+      message({message:'pushNotification',events:['Sauna ausgeschaltet']});
+    }
+  }
+  if (lastHeatedUp != null) {
+    if (lastHeatedUp == false && nowHeatedUp == true) {
+      log(3, 'Klafs EVENT: Sauna aufgeheizt');
+      message({message:'pushNotification',events:['Sauna aufgeheizt']});
+    }
+    else if (lastHeatedUp == true && nowHeatedUp == false) {
+      log(3, 'Klafs EVENT: Sauna nicht aufgeheizt');
+      message({message:'pushNotification',events:['Sauna nicht aufgeheizt']});
+    }
+  }
+  lastPoweredOn = nowPoweredOn;
+  lastHeatedUp = nowHeatedUp;
+  message({message:'opstate',level:100,text:'Klafs API OK'});
+  return d;
+}
+
+function changeMode(mode) {
+  authed('/SaunaApp/SetMode','POST',{id:saunaId, selected_mode:mode});
+}
+function changeTemperature(temp) {
+  authed('/SaunaApp/ChangeTemperature','POST',{id:saunaId,temperature:temp});
+}
+function changeHumidity(level) {
+  authed('/SaunaApp/ChangeHumLevel','POST',{id:saunaId,level:level});
+}
+function powerOn() {
+  if (pin=='HIER_PIN_EINTRAGEN') throw 'Klafs Einschalt-PIN fehlt';
+  // Nur starten, wenn aktuell ausgeschaltet. Keine Umgehung von Freigaben!
+  var d=refresh();
+  if (!d.isPoweredOn) {
+    authed('/SaunaApp/StartCabin','POST',
+      {id:saunaId,pin:pin,time_selected:'false',sel_hour:0,sel_min:0});
+  }
+}
+function powerOff() {
+  authed('/SaunaApp/StopCabin','POST',{id:saunaId});
+}
+
+// Nur bekannte Aktionen zur asynchronen Ausfuehrung annehmen.
+function knownAction(a) {
+  return a=='ActTurnOn' || a=='ActTurnOff' ||
+    a=='ActModeSauna' || a=='ActModeSanarium' || a=='ActModeIR' ||
+    a=='ActSommerSaunaClassic' || a=='ActChilloutSauna' ||
+    a=='ActAfterFitnessSauna' || a=='ActClassicSauna' ||
+    a=='ActSoftSauna' || a=='ActSummerSaunaSoft' ||
+    a=='ActRelaxSanarium' || a=='ActBeautySanarium' ||
+    a=='ActFamilySanarium' || a=='ActImmunPowerSanarium' ||
+    a=='ActVitalSanarium' || a=='ActTropenSanarium' ||
+    a=='ActSubtropenSanarium' || a=='ActFitnessSanarium';
+}
+
+function executeAction(a) {
+  if (a=='ActTurnOn') { powerOn(); return; }
+  if (a=='ActTurnOff') { powerOff(); return; }
+  if (a=='ActModeSauna') { changeMode(1); return; }
+  if (a=='ActModeSanarium') { changeMode(2); return; }
+  if (a=='ActModeIR') { changeMode(3); return; }
+  var mode = 0;
+  var temp = 0;
+  var hum = -1;
+
+  if (a=='ActSommerSaunaClassic') { mode=1; temp=75; }
+  else if (a=='ActChilloutSauna') { mode=1; temp=80; }
+  else if (a=='ActAfterFitnessSauna') { mode=1; temp=85; }
+  else if (a=='ActClassicSauna') { mode=1; temp=90; }
+  else if (a=='ActSoftSauna') { mode=1; temp=65; }
+  else if (a=='ActSummerSaunaSoft') { mode=1; temp=70; }
+  else if (a=='ActRelaxSanarium') { mode=2; temp=50; hum=4; }
+  else if (a=='ActBeautySanarium') { mode=2; temp=55; hum=8; }
+  else if (a=='ActFamilySanarium') { mode=2; temp=50; hum=8; }
+  else if (a=='ActImmunPowerSanarium') { mode=2; temp=50; hum=6; }
+  else if (a=='ActVitalSanarium') { mode=2; temp=45; hum=6; }
+  else if (a=='ActTropenSanarium') { mode=2; temp=60; hum=10; }
+  else if (a=='ActSubtropenSanarium') { mode=2; temp=60; hum=8; }
+  else if (a=='ActFitnessSanarium') { mode=2; temp=55; hum=10; }
+  else throw 'Unbekannte Klafs-Aktion';
+  // Modus, Temperatur, ggf. Feuchte, einschalten.
+  changeMode(mode);
+  changeTemperature(temp);
+  if (hum>=0) changeHumidity(hum);
+  powerOn();
+}
+
+on (every(0:01)) {
+  if (!busy) {
+    busy=true;
+    try { refresh(); }
+    catch as e {
+      log(3,'Klafs Polling fehlgeschlagen: %s',e);
+      message({message:'opstate',level:0,text:'Klafs API Fehler'});
+      // Keine veralteten Messungen als gültig stehen lassen.
+      for (var i=0; i<4; i++) message({message:'sensor',index:i,value:null});
+      // States nicht mit geratenen Werten ueberschreiben.
+      // Bei API-Fehler bleibt der letzte bestaetigte Zustand bestehen.
+    }
+    busy=false;
+  }
+}
+
+// Sofort quittieren, HTTPS-Sequenz im separaten Thread ausfuehren.
+// confirmAction bedeutet hier: Auftrag angenommen, nicht physisch ausgefuehrt.
+on (message()) as m {
+  if (m.message=='invokeAction') {
+    if (busy) {
+      message({message:'confirmAction',action:m.action,errorcode:1,errortext:'Klafs beschaeftigt'});
+    }
+    else if (!knownAction(m.action)) {
+      message({message:'confirmAction',action:m.action,errorcode:1,errortext:'Unbekannte Klafs-Aktion'});
+    }
+    else if (saunaId=='' || saunaId=='HIER_SAUNA_ID_EINTRAGEN' ||
+             username=='' || username=='HIER_USERNAME_EINTRAGEN' ||
+             password=='' || password=='HIER_PASSWORT_EINTRAGEN' ||
+             ((m.action=='ActTurnOn' ||
+               (m.action!='ActTurnOff' && m.action!='ActModeSauna' &&
+                m.action!='ActModeSanarium' && m.action!='ActModeIR')) &&
+              (pin=='' || pin=='HIER_PIN_EINTRAGEN'))) {
+      message({message:'confirmAction',action:m.action,errorcode:1,errortext:'Klafs Konfiguration unvollstaendig'});
+    }
+    else {
+      busy=true;
+      // Sofortige Antwort fuer die digitalSTROM-App (Auftrag angenommen).
+      message({message:'confirmAction',action:m.action,errorcode:0});
+      // passing erzeugt eine Thread-lokale Kopie der Action-ID.
+      concurrent passing actionId=m.action {
+        try {
+          executeAction(actionId);
+          refresh();
+          log(5,'Klafs Aktion abgeschlossen: %s',actionId);
+        }
+        catch as e {
+          log(3,'Klafs Aktion nach Annahme fehlgeschlagen (%s): %s',actionId,e);
+          message({message:'opstate',level:0,text:'Klafs Aktion fehlgeschlagen'});
+        }
+        busy=false;
+      }
+    }
+  }
+}
+
+return true;

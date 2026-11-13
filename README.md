@@ -1,0 +1,1 @@
+This Plan447-Script for DigtalSTROM smarthome system provides an interface for Klafs Sauna App API. Tested with Klafs S1, but probably also with other models which can be controlled through the Klafs mobile app. 
